@@ -1,0 +1,239 @@
+import { NextRequest, NextResponse } from "next/server";
+import { whopsdk } from "@/lib/whop-sdk";
+import { COMPANY_ID, PLAYER_PROPS_PLAN_ID, PLAYER_PROPS_PRODUCT_ID } from "@/lib/constants";
+
+// In-memory tracking store (replace with DB later)
+const claimedUsers = new Map<string, {
+  whopUserId: string;
+  chalkboardUsername: string;
+  promoCode: string;
+  claimedAt: number;
+}>();
+
+// Track by ChalkBoard username too
+const claimedChalkboardAccounts = new Map<string, string>(); // cbUsername -> whopUserId
+
+async function checkIsAuthenticated(request: NextRequest): Promise<string | null> {
+  try {
+    const { userId } = await whopsdk.verifyUserToken(request.headers);
+    return userId || null;
+  } catch {
+    return null;
+  }
+}
+
+function generatePromoCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "CB-";
+  for (let i = 0; i < 8; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
+export async function POST(request: NextRequest) {
+  // 1. Verify user is logged in
+  const userId = await checkIsAuthenticated(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Please log in first" }, { status: 401 });
+  }
+
+  // 2. Check if user already claimed
+  if (claimedUsers.has(userId)) {
+    const claim = claimedUsers.get(userId)!;
+    return NextResponse.json({
+      error: "already_claimed",
+      message: "You've already claimed your free month!",
+      promoCode: claim.promoCode,
+    }, { status: 400 });
+  }
+
+  // 3. Check if user already has Player Props access
+  try {
+    const access = await whopsdk.users.checkAccess(PLAYER_PROPS_PRODUCT_ID, { id: userId });
+    if (access.has_access) {
+      return NextResponse.json({
+        error: "already_has_access",
+        message: "You already have Player Props access!",
+      }, { status: 400 });
+    }
+  } catch {
+    // No access, continue
+  }
+
+  // 4. Get the uploaded screenshot
+  const body = await request.json();
+  const { imageData, mediaType } = body;
+
+  if (!imageData) {
+    return NextResponse.json({ error: "No screenshot uploaded" }, { status: 400 });
+  }
+
+  // 5. AI verification - send to Claude
+  try {
+    const aiResponse = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: mediaType || "image/png",
+                  data: imageData,
+                },
+              },
+              {
+                type: "text",
+                text: `Analyze this screenshot carefully. I need you to verify if this is a REAL ChalkBoard (chalkboard.io) account screenshot showing:
+
+1. It is from the ChalkBoard app/website (look for ChalkBoard branding, logo, UI elements)
+2. The user has an account (look for username, account info, balance info)
+3. There is evidence of a deposit of at least $10 (look for balance, deposit history, transaction, or funds added)
+
+Respond ONLY with JSON, no markdown backticks:
+{
+  "is_valid": true/false,
+  "is_chalkboard": true/false,
+  "has_account": true/false,
+  "has_deposit": true/false,
+  "deposit_amount": "amount if visible, or 'unknown'",
+  "username": "detected username if visible, or 'unknown'",
+  "confidence": "high/medium/low",
+  "rejection_reason": "reason if not valid, or null"
+}
+
+Be strict - if it doesn't clearly look like ChalkBoard, reject it. If there's no visible evidence of a $10+ deposit, reject it. Look for wallet balance, deposit confirmation, transaction history showing funds added.`,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    const aiData = await aiResponse.json();
+    const aiText = aiData.content
+      ?.map((b: any) => (b.type === "text" ? b.text : ""))
+      .join("") || "";
+    const clean = aiText.replace(/```json|```/g, "").trim();
+    const verification = JSON.parse(clean);
+
+    // 6. Check verification result
+    if (!verification.is_valid || !verification.is_chalkboard || !verification.has_deposit) {
+      return NextResponse.json({
+        error: "verification_failed",
+        message: verification.rejection_reason || "Could not verify your ChalkBoard account. Make sure the screenshot shows your ChalkBoard account with a deposit of at least $10.",
+        details: {
+          is_chalkboard: verification.is_chalkboard,
+          has_account: verification.has_account,
+          has_deposit: verification.has_deposit,
+        },
+      }, { status: 400 });
+    }
+
+    // 7. Check if ChalkBoard username already claimed
+    const cbUsername = verification.username?.toLowerCase() || "unknown";
+    if (cbUsername !== "unknown" && claimedChalkboardAccounts.has(cbUsername)) {
+      return NextResponse.json({
+        error: "chalkboard_already_claimed",
+        message: "This ChalkBoard account has already been used to claim a free month.",
+      }, { status: 400 });
+    }
+
+    // 8. Create promo code via Whop Company API
+    const promoCode = generatePromoCode();
+    
+    const companyApiKey = process.env.WHOP_COMPANY_API_KEY;
+    if (!companyApiKey) {
+      return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+    }
+
+    const promoResponse = await fetch("https://api.whop.com/api/v1/promo_codes", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${companyApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        amount_off: 100,
+        base_currency: "usd",
+        code: promoCode,
+        company_id: COMPANY_ID,
+        new_users_only: false,
+        promo_duration_months: 1,
+        promo_type: "percentage",
+        product_id: PLAYER_PROPS_PRODUCT_ID,
+        plan_ids: [PLAYER_PROPS_PLAN_ID],
+        stock: 1,
+        unlimited_stock: false,
+      }),
+    });
+
+    if (!promoResponse.ok) {
+      const errData = await promoResponse.json().catch(() => ({}));
+      console.error("Promo code creation failed:", errData);
+      return NextResponse.json({
+        error: "promo_creation_failed",
+        message: "Verification passed but we couldn't create your promo code. Please contact support.",
+      }, { status: 500 });
+    }
+
+    const promoData = await promoResponse.json();
+
+    // 9. Record the claim
+    claimedUsers.set(userId, {
+      whopUserId: userId,
+      chalkboardUsername: cbUsername,
+      promoCode: promoCode,
+      claimedAt: Date.now(),
+    });
+
+    if (cbUsername !== "unknown") {
+      claimedChalkboardAccounts.set(cbUsername, userId);
+    }
+
+    // 10. Build checkout URL with promo
+    const checkoutUrl = `https://whop.com/rwtw/rwtw-propboard/?code=${promoCode}`;
+
+    return NextResponse.json({
+      success: true,
+      promoCode: promoCode,
+      checkoutUrl: checkoutUrl,
+      chalkboardUsername: cbUsername,
+      message: "Your ChalkBoard account has been verified! Use the link below to claim your free month.",
+    });
+
+  } catch (error: any) {
+    console.error("Verification error:", error);
+    return NextResponse.json({
+      error: "verification_error",
+      message: "Something went wrong during verification. Please try again.",
+    }, { status: 500 });
+  }
+}
+
+// GET - check claim status for current user
+export async function GET(request: NextRequest) {
+  const userId = await checkIsAuthenticated(request);
+  if (!userId) {
+    return NextResponse.json({ claimed: false });
+  }
+
+  if (claimedUsers.has(userId)) {
+    const claim = claimedUsers.get(userId)!;
+    return NextResponse.json({
+      claimed: true,
+      promoCode: claim.promoCode,
+      checkoutUrl: `https://whop.com/rwtw/rwtw-propboard/?code=${claim.promoCode}`,
+      claimedAt: claim.claimedAt,
+    });
+  }
+
+  return NextResponse.json({ claimed: false });
+}
