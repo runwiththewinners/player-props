@@ -1,17 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Redis } from "@upstash/redis";
 import { whopsdk } from "@/lib/whop-sdk";
 import { COMPANY_ID, PLAYER_PROPS_PLAN_ID, PLAYER_PROPS_PRODUCT_ID } from "@/lib/constants";
 
-// In-memory tracking store (replace with DB later)
-const claimedUsers = new Map<string, {
+const redis = Redis.fromEnv();
+
+const CLAIM_BY_USER = "cb:user:";
+const CLAIM_BY_CB = "cb:chalkboard:";
+
+interface ClaimData {
   whopUserId: string;
   chalkboardUsername: string;
   promoCode: string;
   claimedAt: number;
-}>();
-
-// Track by ChalkBoard username too
-const claimedChalkboardAccounts = new Map<string, string>(); // cbUsername -> whopUserId
+}
 
 async function checkIsAuthenticated(request: NextRequest): Promise<string | null> {
   try {
@@ -32,23 +34,21 @@ function generatePromoCode(): string {
 }
 
 export async function POST(request: NextRequest) {
-  // 1. Verify user is logged in
   const userId = await checkIsAuthenticated(request);
   if (!userId) {
     return NextResponse.json({ error: "Please log in first" }, { status: 401 });
   }
 
-  // 2. Check if user already claimed
-  if (claimedUsers.has(userId)) {
-    const claim = claimedUsers.get(userId)!;
+  const existingClaim = await redis.get<ClaimData>(`${CLAIM_BY_USER}${userId}`);
+  if (existingClaim) {
     return NextResponse.json({
       error: "already_claimed",
       message: "You've already claimed your free month!",
-      promoCode: claim.promoCode,
+      promoCode: existingClaim.promoCode,
+      checkoutUrl: `https://whop.com/rwtw/rwtw-propboard/?code=${existingClaim.promoCode}`,
     }, { status: 400 });
   }
 
-  // 3. Check if user already has Player Props access
   try {
     const access = await whopsdk.users.checkAccess(PLAYER_PROPS_PRODUCT_ID, { id: userId });
     if (access.has_access) {
@@ -57,11 +57,8 @@ export async function POST(request: NextRequest) {
         message: "You already have Player Props access!",
       }, { status: 400 });
     }
-  } catch {
-    // No access, continue
-  }
+  } catch {}
 
-  // 4. Get the uploaded screenshot
   const body = await request.json();
   const { imageData, mediaType } = body;
 
@@ -69,7 +66,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No screenshot uploaded" }, { status: 400 });
   }
 
-  // 5. AI verification - send to Claude
   try {
     const aiResponse = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -124,7 +120,6 @@ Be strict - if it doesn't clearly look like ChalkBoard, reject it. If there's no
     const clean = aiText.replace(/```json|```/g, "").trim();
     const verification = JSON.parse(clean);
 
-    // 6. Check verification result
     if (!verification.is_valid || !verification.is_chalkboard || !verification.has_deposit) {
       return NextResponse.json({
         error: "verification_failed",
@@ -137,18 +132,18 @@ Be strict - if it doesn't clearly look like ChalkBoard, reject it. If there's no
       }, { status: 400 });
     }
 
-    // 7. Check if ChalkBoard username already claimed
-    const cbUsername = verification.username?.toLowerCase() || "unknown";
-    if (cbUsername !== "unknown" && claimedChalkboardAccounts.has(cbUsername)) {
-      return NextResponse.json({
-        error: "chalkboard_already_claimed",
-        message: "This ChalkBoard account has already been used to claim a free month.",
-      }, { status: 400 });
+    const cbUsername = (verification.username || "unknown").toLowerCase().trim();
+    if (cbUsername !== "unknown") {
+      const existingCbClaim = await redis.get(`${CLAIM_BY_CB}${cbUsername}`);
+      if (existingCbClaim) {
+        return NextResponse.json({
+          error: "chalkboard_already_claimed",
+          message: "This ChalkBoard account has already been used to claim a free month.",
+        }, { status: 400 });
+      }
     }
 
-    // 8. Create promo code via Whop Company API
     const promoCode = generatePromoCode();
-    
     const companyApiKey = process.env.WHOP_COMPANY_API_KEY;
     if (!companyApiKey) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
@@ -184,27 +179,24 @@ Be strict - if it doesn't clearly look like ChalkBoard, reject it. If there's no
       }, { status: 500 });
     }
 
-    const promoData = await promoResponse.json();
-
-    // 9. Record the claim
-    claimedUsers.set(userId, {
+    const claimData: ClaimData = {
       whopUserId: userId,
       chalkboardUsername: cbUsername,
       promoCode: promoCode,
       claimedAt: Date.now(),
-    });
+    };
 
+    await redis.set(`${CLAIM_BY_USER}${userId}`, claimData);
     if (cbUsername !== "unknown") {
-      claimedChalkboardAccounts.set(cbUsername, userId);
+      await redis.set(`${CLAIM_BY_CB}${cbUsername}`, userId);
     }
 
-    // 10. Build checkout URL with promo
     const checkoutUrl = `https://whop.com/rwtw/rwtw-propboard/?code=${promoCode}`;
 
     return NextResponse.json({
       success: true,
-      promoCode: promoCode,
-      checkoutUrl: checkoutUrl,
+      promoCode,
+      checkoutUrl,
       chalkboardUsername: cbUsername,
       message: "Your ChalkBoard account has been verified! Use the link below to claim your free month.",
     });
@@ -218,15 +210,14 @@ Be strict - if it doesn't clearly look like ChalkBoard, reject it. If there's no
   }
 }
 
-// GET - check claim status for current user
 export async function GET(request: NextRequest) {
   const userId = await checkIsAuthenticated(request);
   if (!userId) {
     return NextResponse.json({ claimed: false });
   }
 
-  if (claimedUsers.has(userId)) {
-    const claim = claimedUsers.get(userId)!;
+  const claim = await redis.get<ClaimData>(`${CLAIM_BY_USER}${userId}`);
+  if (claim) {
     return NextResponse.json({
       claimed: true,
       promoCode: claim.promoCode,
