@@ -290,9 +290,9 @@ function ChalkBoardVerify({ userId }: { userId: string | null }) {
   const [error, setError] = useState("");
   const [checkingStatus, setCheckingStatus] = useState(true);
   const [existingClaim, setExistingClaim] = useState<any>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    // Check if already claimed
     fetch("/api/verify-chalkboard")
       .then((r) => r.json())
       .then((data) => {
@@ -343,113 +343,163 @@ function ChalkBoardVerify({ userId }: { userId: string | null }) {
     reader.readAsDataURL(file);
   };
 
+  const copyCode = (code: string) => {
+    navigator.clipboard.writeText(code).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   if (checkingStatus) return null;
 
-  // Already claimed - show the code
-  if (existingClaim) {
-    return (
+  // Promo code display component (shared between existing claim and new result)
+  const PromoCodeDisplay = ({ promoCode, checkoutUrl }: { promoCode: string; checkoutUrl: string }) => (
+    <div
+      style={{
+        background: "rgba(34,197,94,0.08)",
+        border: "1px solid rgba(34,197,94,0.3)",
+        borderRadius: 16,
+        padding: 28,
+        marginBottom: 28,
+        textAlign: "center",
+        animation: "fadeSlideIn 0.5s ease forwards",
+      }}
+    >
+      <div style={{ fontSize: 32, marginBottom: 10 }}>🎉</div>
       <div
         style={{
-          background: "rgba(34,197,94,0.08)",
-          border: "1px solid rgba(34,197,94,0.3)",
-          borderRadius: 16,
-          padding: 24,
-          marginBottom: 28,
-          textAlign: "center",
+          fontSize: 18,
+          fontFamily: "'Oswald', sans-serif",
+          fontWeight: 700,
+          color: "#22c55e",
+          letterSpacing: 3,
+          marginBottom: 16,
         }}
       >
-        <div style={{ fontSize: 28, marginBottom: 8 }}>✅</div>
+        CHALKBOARD VERIFIED!
+      </div>
+
+      {/* Big promo code box */}
+      <div
+        style={{
+          margin: "0 auto 16px",
+          padding: "16px 24px",
+          borderRadius: 12,
+          background: "rgba(0,0,0,0.4)",
+          border: "2px dashed rgba(74,222,128,0.4)",
+          display: "inline-block",
+          minWidth: 200,
+        }}
+      >
         <div
           style={{
-            fontSize: 16,
+            fontSize: 10,
             fontFamily: "'Oswald', sans-serif",
-            fontWeight: 700,
-            color: "#22c55e",
-            letterSpacing: 2,
-            marginBottom: 12,
-          }}
-        >
-          VERIFIED! YOUR FREE MONTH IS READY
-        </div>
-        <a
-          href={existingClaim.checkoutUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            display: "inline-block",
-            padding: "12px 28px",
-            borderRadius: 10,
-            background: "linear-gradient(135deg, #166534, #22c55e)",
-            color: "#0a0a0a",
-            fontSize: 13,
-            fontFamily: "'Oswald', sans-serif",
-            fontWeight: 700,
-            letterSpacing: 2,
+            color: "#6b7280",
+            letterSpacing: 3,
+            marginBottom: 6,
             textTransform: "uppercase",
-            textDecoration: "none",
           }}
         >
-          Claim Free Month
-        </a>
+          Your Promo Code
+        </div>
+        <div
+          style={{
+            fontSize: 32,
+            fontFamily: "'Oswald', sans-serif",
+            fontWeight: 800,
+            color: "#4ade80",
+            letterSpacing: 5,
+          }}
+        >
+          {promoCode}
+        </div>
+        <button
+          onClick={() => copyCode(promoCode)}
+          style={{
+            marginTop: 8,
+            padding: "6px 16px",
+            borderRadius: 8,
+            border: "1px solid rgba(74,222,128,0.3)",
+            background: "rgba(74,222,128,0.1)",
+            color: "#4ade80",
+            fontSize: 11,
+            fontFamily: "'Oswald', sans-serif",
+            letterSpacing: 2,
+            cursor: "pointer",
+          }}
+        >
+          {copied ? "COPIED ✓" : "COPY CODE"}
+        </button>
       </div>
+
+      {/* Instructions */}
+      <div
+        style={{
+          fontSize: 13,
+          color: "#d4d4d4",
+          lineHeight: 1.7,
+          marginBottom: 20,
+          maxWidth: 340,
+          margin: "0 auto 20px",
+        }}
+      >
+        Use this code at checkout to get{" "}
+        <span style={{ color: "#4ade80", fontWeight: 700 }}>100% off</span>{" "}
+        your first month of Player Props!
+      </div>
+
+      <a
+        href={checkoutUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          display: "inline-block",
+          padding: "16px 40px",
+          borderRadius: 12,
+          background: "linear-gradient(135deg, #166534, #22c55e)",
+          color: "#0a0a0a",
+          fontSize: 15,
+          fontFamily: "'Oswald', sans-serif",
+          fontWeight: 700,
+          letterSpacing: 3,
+          textTransform: "uppercase",
+          textDecoration: "none",
+          cursor: "pointer",
+        }}
+      >
+        CLAIM YOUR FREE MONTH
+      </a>
+
+      <div
+        style={{
+          fontSize: 11,
+          color: "#6b7280",
+          marginTop: 12,
+          fontFamily: "'Courier Prime', monospace",
+        }}
+      >
+        Code will be auto-applied when you click the link above
+      </div>
+    </div>
+  );
+
+  // Already claimed
+  if (existingClaim) {
+    return (
+      <PromoCodeDisplay
+        promoCode={existingClaim.promoCode}
+        checkoutUrl={existingClaim.checkoutUrl}
+      />
     );
   }
 
-  // Success - show promo
+  // Success - just verified
   if (result) {
     return (
-      <div
-        style={{
-          background: "rgba(34,197,94,0.08)",
-          border: "1px solid rgba(34,197,94,0.3)",
-          borderRadius: 16,
-          padding: 24,
-          marginBottom: 28,
-          textAlign: "center",
-          animation: "fadeSlideIn 0.5s ease forwards",
-        }}
-      >
-        <div style={{ fontSize: 28, marginBottom: 8 }}>🎉</div>
-        <div
-          style={{
-            fontSize: 16,
-            fontFamily: "'Oswald', sans-serif",
-            fontWeight: 700,
-            color: "#22c55e",
-            letterSpacing: 2,
-            marginBottom: 8,
-          }}
-        >
-          CHALKBOARD VERIFIED!
-        </div>
-        <p style={{ fontSize: 13, color: "#9ca3af", marginBottom: 16 }}>
-          {result.message}
-        </p>
-        <a
-          href={result.checkoutUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            display: "inline-block",
-            padding: "14px 32px",
-            borderRadius: 12,
-            background: "linear-gradient(135deg, #166534, #22c55e)",
-            color: "#0a0a0a",
-            fontSize: 14,
-            fontFamily: "'Oswald', sans-serif",
-            fontWeight: 700,
-            letterSpacing: 3,
-            textTransform: "uppercase",
-            textDecoration: "none",
-            marginBottom: 8,
-          }}
-        >
-          Claim Your Free Month
-        </a>
-        <div style={{ fontSize: 11, color: "#6b7280", marginTop: 8 }}>
-          Code: <span style={{ color: "#4ade80", fontFamily: "'Courier Prime', monospace" }}>{result.promoCode}</span>
-        </div>
-      </div>
+      <PromoCodeDisplay
+        promoCode={result.promoCode}
+        checkoutUrl={result.checkoutUrl}
+      />
     );
   }
 
@@ -897,7 +947,6 @@ export default function PlayerPropsClient({
         setPlays((prev) => [data.play, ...prev]);
         setShowAdmin(false);
 
-        // Send push notification
         try {
           await fetch("/api/notify", {
             method: "POST",
