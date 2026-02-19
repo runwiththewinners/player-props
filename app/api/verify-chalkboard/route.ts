@@ -93,9 +93,15 @@ export async function POST(request: NextRequest) {
                 type: "text",
                 text: `Analyze this screenshot carefully. I need you to verify if this is a REAL ChalkBoard (chalkboard.io) account screenshot showing:
 
-1. It is from the ChalkBoard app/website (look for ChalkBoard branding, logo, UI elements)
-2. The user has an account (look for username, account info, balance info)
-3. There is evidence of a deposit of at least $10 (look for balance, deposit history, transaction, or funds added)
+1. It is from the ChalkBoard app/website (look for ChalkBoard branding, logo, UI elements, the CHALK BOARD logo)
+2. The user has an account (look for username, profile info, "Joined" date)
+3. There is evidence of at least $10 in the account. This can appear as:
+   - A balance shown ANYWHERE on screen (including bottom navigation bar, corner of screen, account tab)
+   - Deposit history or transactions
+   - A bonus claim showing funds were added
+   - Wallet or balance display
+
+IMPORTANT: Check ALL corners and edges of the screenshot carefully. The balance is often displayed in the bottom-right corner next to "Account" in the navigation bar (e.g. "$10.00 Account").
 
 Respond ONLY with JSON, no markdown backticks:
 {
@@ -109,7 +115,7 @@ Respond ONLY with JSON, no markdown backticks:
   "rejection_reason": "reason if not valid, or null"
 }
 
-Be strict - if it doesn't clearly look like ChalkBoard, reject it. If there's no visible evidence of a $10+ deposit, reject it. Look for wallet balance, deposit confirmation, transaction history showing funds added.`,
+Be strict about it being ChalkBoard, but be thorough when looking for balance/deposit evidence - check every part of the screen including navigation bars, headers, and corners.`,
               },
             ],
           },
