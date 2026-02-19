@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Redis } from "@upstash/redis";
 import { whopsdk } from "@/lib/whop-sdk";
 import { COMPANY_ID, PRODUCTS, PREMIUM_TIERS } from "@/lib/constants";
 import type { Play } from "@/lib/types";
 
-// In-memory store (replace with a database in production)
-let plays: Play[] = [];
+const redis = Redis.fromEnv();
+const PLAYS_KEY = "player-props:plays";
+
+async function getPlays(): Promise<Play[]> {
+  const data = await redis.get<Play[]>(PLAYS_KEY);
+  return data || [];
+}
+
+async function savePlays(plays: Play[]): Promise<void> {
+  await redis.set(PLAYS_KEY, plays);
+}
 
 async function getUser(request: NextRequest): Promise<{
   userId: string | null;
@@ -15,7 +25,6 @@ async function getUser(request: NextRequest): Promise<{
     const { userId } = await whopsdk.verifyUserToken(request.headers);
     if (!userId) return { userId: null, isAdmin: false, hasPremiumAccess: false };
 
-    // Check admin status
     let isAdmin = false;
     try {
       const companyAccess = await whopsdk.users.checkAccess(COMPANY_ID, {
@@ -26,7 +35,6 @@ async function getUser(request: NextRequest): Promise<{
       isAdmin = false;
     }
 
-    // Check premium access
     let hasPremiumAccess = false;
     for (const productId of PREMIUM_TIERS) {
       try {
@@ -52,6 +60,8 @@ export async function GET(request: NextRequest) {
   if (!user.userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  const plays = await getPlays();
 
   if (user.hasPremiumAccess || user.isAdmin) {
     return NextResponse.json({ plays, isAdmin: user.isAdmin });
@@ -108,7 +118,10 @@ export async function POST(request: NextRequest) {
     createdAt: Date.now(),
   };
 
+  const plays = await getPlays();
   plays.unshift(newPlay);
+  await savePlays(plays);
+
   return NextResponse.json({ play: newPlay, success: true });
 }
 
@@ -125,11 +138,14 @@ export async function PATCH(request: NextRequest) {
   const body = await request.json();
   const { id, result } = body;
 
+  const plays = await getPlays();
   const playIndex = plays.findIndex((p) => p.id === id);
   if (playIndex === -1) {
     return NextResponse.json({ error: "Play not found" }, { status: 404 });
   }
 
   plays[playIndex].result = result;
+  await savePlays(plays);
+
   return NextResponse.json({ play: plays[playIndex], success: true });
 }
