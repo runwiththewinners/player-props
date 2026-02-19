@@ -69,7 +69,11 @@ export async function POST(request: NextRequest) {
   try {
     const aiResponse = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY || "",
+        "anthropic-version": "2023-06-01",
+      },
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 1000,
@@ -113,12 +117,31 @@ Be strict - if it doesn't clearly look like ChalkBoard, reject it. If there's no
       }),
     });
 
+    if (!aiResponse.ok) {
+      const errText = await aiResponse.text();
+      console.error("Claude API error:", aiResponse.status, errText.substring(0, 500));
+      return NextResponse.json({
+        error: "verification_error",
+        message: "Verification service temporarily unavailable. Please try again.",
+      }, { status: 503 });
+    }
+
     const aiData = await aiResponse.json();
     const aiText = aiData.content
       ?.map((b: any) => (b.type === "text" ? b.text : ""))
       .join("") || "";
     const clean = aiText.replace(/```json|```/g, "").trim();
-    const verification = JSON.parse(clean);
+
+    let verification;
+    try {
+      verification = JSON.parse(clean);
+    } catch (e) {
+      console.error("Failed to parse Claude response:", clean.substring(0, 500));
+      return NextResponse.json({
+        error: "verification_error",
+        message: "Could not process the screenshot. Please try uploading a clearer image.",
+      }, { status: 500 });
+    }
 
     if (!verification.is_valid || !verification.is_chalkboard || !verification.has_deposit) {
       return NextResponse.json({
